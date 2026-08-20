@@ -1459,6 +1459,89 @@ describe("code diff extension", () => {
     expect(result.content[0].text).toContain("generated review prompt");
   });
 
+  it("opens fresh reviews when optional handoff placeholders are blank", async () => {
+    const tools = new Map<string, any>();
+    mocks.getReviewWindowData.mockResolvedValue({
+      repoRoot: "/repo",
+      files: [localReviewFile()],
+      branchBaseRevision: null,
+      modifiedRevision: undefined,
+      visibleScopes: ["git-diff"],
+    });
+    mocks.runReviewApp.mockResolvedValue({ type: "cancel" });
+    const pi = {
+      registerCommand: vi.fn(),
+      registerTool: vi.fn((tool) => tools.set(tool.name, tool)),
+      registerShortcut: vi.fn(),
+      on: vi.fn(),
+    };
+    const ctx = { hasUI: true, cwd: "/repo", ui: { notify: vi.fn(), setWidget: vi.fn(), setEditorText: vi.fn() } };
+
+    codeDiffExtension(pi as never);
+    const openCodeDiff = tools.get("open_code_diff");
+    const prepared = openCodeDiff.prepareArguments({
+      args: "",
+      cwd: "/repo",
+      continuation: {
+        kind: "remote-discuss",
+        priorSessionId: "",
+        priorBaseRevision: "",
+        priorHeadRevision: "",
+      },
+      comments: [],
+      pullRequest: {
+        provider: "",
+        repo: "",
+        number: "",
+        url: "",
+        title: "",
+        authorLogin: "",
+        state: "",
+        body: "",
+        baseRefName: "",
+        baseRefOid: "",
+        headRefName: "",
+        headRefOid: "",
+        additions: 0,
+        deletions: 0,
+        changedFiles: 0,
+        reviews: [],
+        reviewDecision: "",
+        stackParent: { number: "", title: "", headRefName: "", state: "", url: "" },
+        threads: [],
+        checks: [],
+        summary: "",
+        filePriority: [],
+        queue: { position: 0, total: 0 },
+        nextCandidate: { url: "", title: "" },
+      },
+    });
+
+    expect(prepared).toEqual({ args: "", cwd: "/repo", comments: [] });
+    const result = await openCodeDiff.execute(
+      "tool-call",
+      prepared,
+      new AbortController().signal,
+      vi.fn(),
+      ctx,
+    );
+
+    expect(mocks.getReviewWindowData).toHaveBeenCalledWith(pi, "/repo");
+    expect(mocks.runReviewApp).toHaveBeenCalledOnce();
+    expect(result.details).toMatchObject({ started: true, args: "", cwd: "/repo" });
+
+    const continuation = {
+      kind: "remote-discuss",
+      priorSessionId: "automatic-session",
+      priorBaseRevision: "origin/main",
+      priorHeadRevision: "abc123",
+    };
+    expect(openCodeDiff.prepareArguments({ args: "remote example/widgets#1", continuation })).toEqual({
+      args: "remote example/widgets#1",
+      continuation,
+    });
+  });
+
   it("validates every persisted draft before initial mount and uses the safe in-memory snapshot when saving fails", async () => {
     const tools = new Map<string, any>();
     const first = localReviewFile();

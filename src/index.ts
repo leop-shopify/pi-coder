@@ -105,6 +105,41 @@ function normalizeReviewCwd(cwd: string, fallbackCwd: string): string {
   return resolvePath(baseCwd, expandedCwd);
 }
 
+function isBlankToolPlaceholder(value: unknown): boolean {
+  if (value == null) return true;
+  if (typeof value === "string") return value.trim().length === 0;
+  if (typeof value === "number") return value === 0;
+  if (typeof value === "boolean") return !value;
+  if (Array.isArray(value)) return value.every(isBlankToolPlaceholder);
+  if (typeof value !== "object") return false;
+  return Object.values(value).every(isBlankToolPlaceholder);
+}
+
+type OpenCodeDiffPreparedArguments = {
+  args?: string;
+  cwd?: string;
+  continuation?: RemoteDiscussContinuation;
+  comments?: SeedReviewComment[];
+  pullRequest?: PullRequestHandoff;
+};
+
+function prepareOpenCodeDiffArguments(input: unknown): OpenCodeDiffPreparedArguments {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    return input as OpenCodeDiffPreparedArguments;
+  }
+
+  const prepared = { ...(input as Record<string, unknown>) };
+  const continuation = prepared.continuation;
+  if (continuation != null && typeof continuation === "object" && !Array.isArray(continuation)) {
+    const { kind, ...marker } = continuation as Record<string, unknown>;
+    if ((kind == null || kind === "" || kind === "remote-discuss") && isBlankToolPlaceholder(marker)) {
+      delete prepared.continuation;
+    }
+  }
+  if (isBlankToolPlaceholder(prepared.pullRequest)) delete prepared.pullRequest;
+  return prepared as OpenCodeDiffPreparedArguments;
+}
+
 function resolveLocalReviewCwdArg(arg: string, fallbackCwd: string): string | null {
   const reviewCwd = normalizeReviewCwd(arg, fallbackCwd);
   try {
@@ -1602,6 +1637,7 @@ export default function codeDiffExtension(pi: ExtensionAPI, options: { runExtern
       "Pass args exactly as you would after /diff: empty for local working-tree/uncommitted changes, remote <url | branch> for remote reviews, or base..head/base...head for custom ranges.",
       "Do not ask the user to commit before review; empty args reviews uncommitted working-tree changes, including untracked files.",
       "Pass cwd when you know the checkout/repository directory. Otherwise the current Pi cwd is used.",
+      "For fresh reviews, omit continuation and pullRequest entirely. Never send empty placeholder objects; continuation is only for the exact saved remote DISCUSS flow and pullRequest only for exact pre-resolved PR metadata.",
       "Pass comments to prepopulate concrete review notes into the UI. Each needs a path matching a reviewed file and a body; set side (added/deleted/file), line or startLine/endLine, and intent (discuss/comment/modify) to place it precisely. Seeded comments are editable and deletable by the user and flow through the same review prompt as hand-written ones.",
       "Use seeded comments only when you have specific, actionable feedback to attach; the user opens the UI and decides what to keep. Comments whose path does not match a reviewed file are reported back, not silently applied.",
       "Wait for the tool result. It returns message, prompt, and context details after the interactive UI finishes.",
@@ -1675,6 +1711,7 @@ export default function codeDiffExtension(pi: ExtensionAPI, options: { runExtern
         nextCandidate: Type.Optional(Type.Object({ url: Type.String(), title: Type.Optional(Type.String()) }, { description: "Next PR the caller intends to review after this one." })),
       }, { description: "Optional pre-resolved pull request metadata for a remote target. Skips redundant metadata, stack, and context lookups. Must match the args target exactly; malformed or stale metadata aborts the review." })),
     }),
+    prepareArguments: prepareOpenCodeDiffArguments,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const input = params as {
         args?: string;

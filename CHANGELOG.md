@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.7 - 2026-08-20
+
+### Fixed
+
+- Ignore blank optional review handoff placeholders so fresh `open_code_diff` calls resolve their own local or remote context normally.
+
 ## 0.4.6 - 2026-08-19
 
 ### Changed
