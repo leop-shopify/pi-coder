@@ -123,6 +123,41 @@ function normalizeReviewCwd(cwd: string, fallbackCwd: string): string {
   return resolvePath(baseCwd, expandedCwd);
 }
 
+function isBlankToolPlaceholder(value: unknown): boolean {
+  if (value == null) return true;
+  if (typeof value === "string") return value.trim().length === 0;
+  if (typeof value === "number") return value === 0;
+  if (typeof value === "boolean") return !value;
+  if (Array.isArray(value)) return value.every(isBlankToolPlaceholder);
+  if (typeof value !== "object") return false;
+  return Object.values(value).every(isBlankToolPlaceholder);
+}
+
+type OpenCodeDiffPreparedArguments = {
+  args?: string;
+  cwd?: string;
+  continuation?: RemoteDiscussContinuation;
+  comments?: SeedReviewComment[];
+  pullRequest?: PullRequestHandoff;
+};
+
+function prepareOpenCodeDiffArguments(input: unknown): OpenCodeDiffPreparedArguments {
+  if (input == null || typeof input !== "object" || Array.isArray(input)) {
+    return input as OpenCodeDiffPreparedArguments;
+  }
+
+  const prepared = { ...(input as Record<string, unknown>) };
+  const continuation = prepared.continuation;
+  if (continuation != null && typeof continuation === "object" && !Array.isArray(continuation)) {
+    const { kind, ...marker } = continuation as Record<string, unknown>;
+    if ((kind == null || kind === "" || kind === "remote-discuss") && isBlankToolPlaceholder(marker)) {
+      delete prepared.continuation;
+    }
+  }
+  if (isBlankToolPlaceholder(prepared.pullRequest)) delete prepared.pullRequest;
+  return prepared as OpenCodeDiffPreparedArguments;
+}
+
 function resolveLocalReviewCwdArg(arg: string, fallbackCwd: string): string | null {
   const reviewCwd = normalizeReviewCwd(arg, fallbackCwd);
   try {
@@ -1778,6 +1813,7 @@ export default function codeDiffExtension(pi: ExtensionAPI, options: { runExtern
         nextCandidate: Type.Optional(Type.Object({ url: Type.String(), title: Type.Optional(Type.String()) }, { description: "Next PR the caller intends to review after this one." })),
       }, { description: "Optional pre-resolved pull request metadata for a remote target. Skips redundant metadata, stack, and context lookups. Must match the args target exactly; malformed or stale metadata aborts the review." })),
     }),
+    prepareArguments: prepareOpenCodeDiffArguments,
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const input = params as {
         args?: string;

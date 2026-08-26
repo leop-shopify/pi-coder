@@ -1634,6 +1634,170 @@ describe("code diff extension", () => {
     expect(result.content[0].text).toContain("generated review prompt");
   });
 
+  it("omits blank optional handoff placeholders before opening a fresh local review", async () => {
+    const tools = new Map<string, any>();
+    mocks.getReviewWindowData.mockResolvedValue({
+      repoRoot: "/repo",
+      files: [localReviewFile()],
+      branchBaseRevision: null,
+      modifiedRevision: undefined,
+      visibleScopes: ["git-diff"],
+    });
+    mocks.runReviewApp.mockResolvedValue({ type: "cancel" });
+    const pi = {
+      registerCommand: vi.fn(),
+      registerTool: vi.fn((tool) => tools.set(tool.name, tool)),
+      registerShortcut: vi.fn(),
+      on: vi.fn(),
+    };
+    const ctx = { hasUI: true, cwd: "/repo", ui: { notify: vi.fn(), setWidget: vi.fn(), setEditorText: vi.fn() } };
+
+    codeDiffExtension(pi as never);
+    const openCodeDiff = tools.get("open_code_diff");
+    const input = {
+      args: "",
+      cwd: "/repo",
+      continuation: {
+        kind: "remote-discuss",
+        priorSessionId: "",
+        priorBaseRevision: "",
+        priorHeadRevision: "",
+      },
+      comments: [],
+      pullRequest: {
+        provider: "",
+        repo: "",
+        number: "",
+        url: "",
+        title: "",
+        authorLogin: "",
+        state: "",
+        body: "",
+        baseRefName: "",
+        baseRefOid: "",
+        headRefName: "",
+        headRefOid: "",
+        additions: 0,
+        deletions: 0,
+        changedFiles: 0,
+        reviews: [],
+        reviewDecision: "",
+        stackParent: { number: "", title: "", headRefName: "", state: "", url: "" },
+        threads: [],
+        checks: [],
+        summary: "",
+        filePriority: [],
+        queue: { position: 0, total: 0 },
+        nextCandidate: { url: "", title: "" },
+      },
+    };
+    const original = structuredClone(input);
+    const prepared = openCodeDiff.prepareArguments(input);
+
+    expect(prepared).toEqual({ args: "", cwd: "/repo", comments: [] });
+    expect(prepared).not.toBe(input);
+    expect(input).toEqual(original);
+
+    for (const continuation of [
+      { kind: "remote-discuss", priorSessionId: "", priorBaseRevision: "", priorHeadRevision: "" },
+      { kind: "", priorSessionId: "", priorBaseRevision: "", priorHeadRevision: "" },
+      { priorSessionId: "", priorBaseRevision: "", priorHeadRevision: "" },
+    ]) {
+      expect(openCodeDiff.prepareArguments({ continuation })).not.toHaveProperty("continuation");
+    }
+
+    const result = await openCodeDiff.execute(
+      "tool-call",
+      prepared,
+      new AbortController().signal,
+      vi.fn(),
+      ctx,
+    );
+
+    expect(mocks.getReviewWindowData).toHaveBeenCalledWith(pi, "/repo");
+    expect(mocks.runReviewApp).toHaveBeenCalledOnce();
+    expect(result.details).toMatchObject({ started: true, args: "", cwd: "/repo" });
+  });
+
+  it("preserves real handoffs and leaves malformed nonblank handoffs for validation", async () => {
+    const tools = new Map<string, any>();
+    const pi = {
+      registerCommand: vi.fn(),
+      registerTool: vi.fn((tool) => tools.set(tool.name, tool)),
+      registerShortcut: vi.fn(),
+      on: vi.fn(),
+    };
+    const ctx = { hasUI: true, cwd: "/repo", ui: { notify: vi.fn(), setWidget: vi.fn(), setEditorText: vi.fn() } };
+
+    codeDiffExtension(pi as never);
+    const openCodeDiff = tools.get("open_code_diff");
+    const continuation = {
+      kind: "remote-discuss",
+      priorSessionId: "automatic-session",
+      priorBaseRevision: "origin/main",
+      priorHeadRevision: "a".repeat(40),
+    };
+    const pullRequest = {
+      provider: "github",
+      repo: "example/widgets",
+      number: "1",
+      url: "https://github.com/example/widgets/pull/1",
+      title: "Add review mode",
+      authorLogin: "alice",
+      state: "OPEN",
+      body: "Description",
+      baseRefName: "main",
+      baseRefOid: "b".repeat(40),
+      headRefName: "feature/review",
+      headRefOid: "a".repeat(40),
+      additions: 3,
+      deletions: 1,
+      changedFiles: 2,
+      reviews: [{ author: "bob", state: "APPROVED" }],
+      reviewDecision: "APPROVED",
+      stackParent: { number: "2", title: "Parent change", headRefName: "parent/review", state: "OPEN", url: "https://github.com/example/widgets/pull/2" },
+      threads: [{ path: "src/app.ts", line: 4, resolved: false, outdated: false, comments: [{ author: "bob", body: "Please simplify this." }] }],
+      checks: [{ name: "test", status: "COMPLETED", conclusion: "SUCCESS" }],
+      summary: "Summary",
+      filePriority: [{ path: "src/app.ts", reason: "Core change" }],
+      queue: { position: 1, total: 2 },
+      nextCandidate: { url: "https://github.com/example/widgets/pull/3", title: "Next change" },
+    };
+    const prepared = openCodeDiff.prepareArguments({ args: "remote example/widgets#1", continuation, pullRequest });
+
+    expect(prepared).toEqual({ args: "remote example/widgets#1", continuation, pullRequest });
+    expect(prepared.continuation).toBe(continuation);
+    expect(prepared.pullRequest).toBe(pullRequest);
+
+    for (const malformed of [
+      { kind: "remote-discuss", priorSessionId: "saved", priorBaseRevision: "", priorHeadRevision: "" },
+      { kind: "other", priorSessionId: "", priorBaseRevision: "", priorHeadRevision: "" },
+    ]) {
+      const malformedPrepared = openCodeDiff.prepareArguments({ args: "remote example/widgets#1", continuation: malformed });
+      expect(malformedPrepared.continuation).toBe(malformed);
+      const result = await openCodeDiff.execute(
+        "tool-call",
+        malformedPrepared,
+        new AbortController().signal,
+        vi.fn(),
+        ctx,
+      );
+      expect(result.details).toMatchObject({ started: false, message: "Invalid remote DISCUSS continuation marker." });
+    }
+
+    const malformedPullRequest = { provider: "github" };
+    const malformedPrepared = openCodeDiff.prepareArguments({ args: "remote example/widgets#1", pullRequest: malformedPullRequest });
+    expect(malformedPrepared.pullRequest).toBe(malformedPullRequest);
+    const result = await openCodeDiff.execute(
+      "tool-call",
+      malformedPrepared,
+      new AbortController().signal,
+      vi.fn(),
+      ctx,
+    );
+    expect(result.details).toMatchObject({ started: false, message: expect.stringMatching(/^Invalid pull request handoff:/) });
+  });
+
   it("validates every persisted draft before initial mount and uses the safe in-memory snapshot when saving fails", async () => {
     const tools = new Map<string, any>();
     const first = localReviewFile();
